@@ -1,0 +1,331 @@
+/* =========================================
+   1. 기본 초기화 및 레이아웃
+   ========================================= */
+body {
+    margin: 0;
+    padding: 0;
+    background-color: #f0f2f5; /* 밝은 회색 배경 */
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    color: #333;
+    height: 100vh; /* 화면 전체 높이 */
+    box-sizing: border-box;
+    overflow: hidden; /* PC에서는 전체 스크롤 방지 */
+}
+
+/* 전체 컨테이너: 좌우 배치 */
+.dashboard-container {
+    display: flex;
+    flex-direction: row;
+    height: 100%;
+    padding: 15px;
+    gap: 15px;
+    box-sizing: border-box;
+}
+
+/* =========================================
+   2. 공통 패널 스타일
+   ========================================= */
+.panel {
+    background-color: #fff;
+    border: 1px solid #d1d1d1;
+    border-radius: 6px;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+    display: flex;
+    flex-direction: column;
+    min-height: 0; /* 중요: Flex 자식 넘침 방지 */
+}
+
+.panel-header {
+    background-color: #e9ecef;
+    padding: 12px 15px;
+    font-weight: bold;
+    font-size: 1.1rem;
+    color: #495057;
+    border-bottom: 1px solid #d1d1d1;
+    flex-shrink: 0; /* 헤더 크기 고정 */
+}
+
+.panel-body {
+    padding: 0;
+    flex: 1; /* 남은 공간 모두 사용 */
+    overflow: hidden; 
+    position: relative;
+    background-color: #fafafa;
+}
+
+/* =========================================
+   3. 좌측: Map 패널
+   ========================================= */
+.map-panel {
+    flex: 6; /* 좌측 영역 비율 */
+}
+
+.map-body {
+    background-color: #e0e0e0; /* 맵 빈 공간 색상 */
+    width: 100%;
+    height: 100%;
+    display: flex;
+    justify-content: center; /* 중앙 정렬 */
+    align-items: center;
+}
+
+/* 캔버스는 JS에서 크기 조절됨 */
+#mapCanvas {
+    display: block;
+    box-shadow: 0 0 10px rgba(0,0,0,0.1);
+    background-color: #fff;
+}
+
+/* =========================================
+   4. 우측: 카메라 및 작업 패널
+   ========================================= */
+.right-column {
+    flex: 4; /* 우측 영역 비율 */
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+    min-height: 0; /* 중요 */
+}
+
+/* --- 상단: 카메라 뷰 --- */
+.view-panel {
+    flex: 4; /* 높이 비율 */
+}
+
+.camera-body {
+    background-color: #000;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+#cameraCanvas {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain; /* 비율 유지하며 꽉 채우기 */
+}
+
+/* --- 하단: 컨트롤 패널 --- */
+.task-panel {
+    flex: 6; /* 높이 비율 */
+}
+
+/* 내부 레이아웃: Grid 사용 (PC 기준) */
+.task-body {
+    padding: 15px;
+    display: grid;
+    grid-template-columns: 1fr 1fr; /* 1:1 분할 */
+    grid-template-rows: auto 1fr;
+    gap: 15px;
+    overflow-y: auto; /* 내용 많을 시 내부 스크롤 */
+}
+
+/* 4-1. 상태 모니터 (테이블) */
+.status-section {
+    grid-column: 1 / 2;
+}
+
+.status-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+    background: #fff;
+    border: 1px solid #dee2e6;
+}
+.status-table th {
+    background-color: #f8f9fa;
+    color: #495057;
+    font-weight: 600;
+}
+.status-table th, .status-table td {
+    border: 1px solid #dee2e6;
+    padding: 8px;
+    text-align: left;
+}
+.badge {
+    display: inline-block;
+    padding: 0.25em 0.4em;
+    font-size: 75%;
+    font-weight: 700;
+    color: #fff;
+    border-radius: 0.25rem;
+    text-align: center;
+    vertical-align: baseline;
+}
+.badge.active { background-color: #28a745; }
+
+/* 4-2. 로그 큐 (YOLO) */
+.queue-section {
+    grid-column: 2 / 3;
+    grid-row: 1 / 3; /* 우측 열 전체 사용 */
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+.queue-box {
+    border: 1px solid #ced4da;
+    background: #fff;
+    flex: 1;
+    overflow-y: auto;
+    padding: 5px;
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 0.85rem;
+}
+
+#yolo-log {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+#yolo-log li {
+    padding: 4px 8px;
+    border-bottom: 1px solid #f1f1f1;
+}
+#yolo-log li:first-child {
+    background-color: #e8f0fe; /* 최신 로그 강조 */
+    font-weight: bold;
+}
+
+/* 4-3. 컨트롤 버튼 */
+.control-section {
+    grid-column: 1 / 2;
+}
+
+.button-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 5px;
+}
+
+button {
+    padding: 8px 12px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    flex: 1 1 45%; /* 버튼 너비 자동 */
+    transition: background-color 0.2s;
+}
+
+.btn-primary {
+    background-color: #0d6efd;
+    color: white;
+}
+.btn-primary:hover { background-color: #0b5ed7; }
+
+.btn-default {
+    background-color: #fff;
+    border-color: #ced4da;
+    color: #333;
+}
+.btn-default:hover { background-color: #e9ecef; }
+
+/* 섹션 제목 스타일 */
+h3 {
+    margin: 0 0 10px 0;
+    font-size: 1rem;
+    color: #333;
+    border-left: 4px solid #0d6efd;
+    padding-left: 8px;
+}
+
+/* 4-4. 안내 메시지 스타일 (추가됨) */
+.nav-message {
+    margin-top: 15px;
+    padding: 10px;
+    background-color: #e7f1ff;
+    color: #0d6efd;
+    border: 1px solid #b6d4fe;
+    border-radius: 4px;
+    font-weight: bold;
+    text-align: center;
+    display: none; /* JS에서 block으로 변경 */
+}
+
+
+/* =========================================
+   5. 모바일/태블릿 최적화 (화면 너비 768px 이하)
+   ========================================= */
+@media screen and (max-width: 768px) {
+
+    /* 1. 전체 스크롤 허용 및 높이 제한 해제 */
+    body {
+        height: auto; /* 고정 높이 해제 */
+        overflow-y: auto; /* 세로 스크롤 허용 */
+    }
+
+    .dashboard-container {
+        flex-direction: column; /* 가로 배치 -> 세로 배치 변경 */
+        height: auto;
+        padding: 10px;
+        gap: 10px;
+    }
+
+    /* 2. 패널 공통 설정: 너비 꽉 채우기 */
+    .panel {
+        width: 100%;
+        min-height: auto; /* 기존 flex 높이 무시 */
+        flex: none; /* 비율 할당 해제 */
+    }
+
+    /* 3. [상단] 맵 패널: 높이 고정 */
+    .map-panel {
+        height: 50vh; /* 화면의 절반 정도 차지 */
+        min-height: 300px;
+    }
+
+    /* 4. [중단] 우측 컬럼(카메라+태스크) 레이아웃 해제 */
+    .right-column {
+        flex: none;
+        height: auto;
+        gap: 10px;
+    }
+
+    /* 카메라 패널 높이 */
+    .view-panel {
+        height: 300px; /* 적절한 높이 고정 */
+    }
+
+    /* 5. [하단] 태스크 패널: 그리드 -> 1단 변경 */
+    .task-panel {
+        height: auto; /* 내용만큼 늘어나도록 */
+    }
+
+    .task-body {
+        display: flex; /* Grid 대신 Flex column 사용 */
+        flex-direction: column;
+        gap: 20px;
+        overflow: visible; /* 내부 스크롤 제거 (전체 스크롤 사용) */
+    }
+
+    /* 그리드 위치 초기화 */
+    .status-section, 
+    .queue-section, 
+    .control-section {
+        grid-column: auto;
+        grid-row: auto;
+    }
+
+    /* 로그 박스 높이 제한 (너무 길어짐 방지) */
+    .queue-section {
+        height: auto;
+    }
+    .queue-box {
+        min-height: 150px;
+        max-height: 200px; /* 로그가 많으면 이 안에서만 스크롤 */
+    }
+
+    /* 6. 버튼 터치 편의성 (더 크게) */
+    button {
+        padding: 12px 16px; /* 터치하기 좋게 패딩 증가 */
+        font-size: 1rem;
+        flex: 1 1 100%; /* 한 줄에 꽉 차게 */
+    }
+    
+    .button-group {
+        gap: 10px;
+    }
+}

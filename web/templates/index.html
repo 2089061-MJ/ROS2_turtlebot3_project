@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0"> 
+
+<title>터틀봇 제어 웹 대시보드</title>
+<script src="https://cdn.jsdelivr.net/npm/roslib/build/roslib.min.js"></script>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<div class="dashboard-container">
+    <div class="panel map-panel">
+        <div class="panel-header">맵</div>
+        <div class="panel-body map-body">
+            <canvas id="mapCanvas"></canvas>
+        </div>
+    </div>
+
+    <div class="right-column">
+        
+        <div class="panel view-panel">
+            <div class="panel-header">터틀봇 실시간 모니터링</div>
+            <div class="panel-body camera-body">
+                <canvas id="cameraCanvas"></canvas>
+            </div>
+        </div>
+
+        <div class="panel task-panel">
+            <div class="panel-header">터틀봇 Task</div>
+            <div class="panel-body task-body">
+                
+                <div class="status-section">
+                    <h3>상태 모니터링(amcl_pose)</h3>
+                    <table class="status-table">
+                        <thead>
+                            <tr>
+                                <th>Item</th>
+                                <th>Value</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>Position</td>
+                                <td id="robot-pos">로딩중입니다...</td>
+                            </tr>
+                             <tr>
+                                <td>Yaw</td>
+                                <td id="robot-yaw">로딩중입니다...</td>
+                            </tr>
+                            <tr>
+                                <td>System</td>
+                                <td><span class="badge active">활성화</span></td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="queue-section">
+                    <h3>이벤트 로그(YOLO)</h3>
+                    <div class="queue-box">
+                        <ul id="yolo-log">
+                            </ul>
+                    </div>
+                </div>
+
+                <div class="control-section">
+                    <h3>제어</h3>
+                    <div class="button-group">
+                        <button class="btn-primary" onclick="sendGoal('{{ start.name }}')">{{ start.name }}</button>
+                        {% for d in destinations %}
+                            <button class="btn-default" onclick="sendGoal('{{ d.name }}')">{{ d.name }}</button>
+                        {% endfor %}
+                    </div>
+                    <div id="nav-message" class="nav-message"></div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+
+// 1. ROS 연결 설정
+const ros = new ROSLIB.Ros({ url : 'ws://192.168.0.28:9090' });
+
+// 2. 목적지(Goal) 전송 함수 [수정됨]
+function sendGoal(name){
+    // (1) 메시지 업데이트
+    const msgBox = document.getElementById('nav-message');
+    msgBox.innerText = "'" + name + "' 이동 중입니다. 터틀봇을 따라가세요.";
+    msgBox.style.display = 'block'; // 메시지 보이기
+
+    // (2) 서버로 명령 전송
+    fetch('/api/goal', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({name:name})
+    });
+}
+
+// 3. Map 구독 및 반응형 그리기
+const mapCanvas = document.getElementById('mapCanvas');
+const mapCtx = mapCanvas.getContext('2d');
+const mapContainer = document.querySelector('.map-body'); // 크기 계산 기준
+
+// map 토픽 구독
+const mapListener = new ROSLIB.Topic({
+    ros: ros,
+    name: '/map',
+    messageType: 'nav_msgs/OccupancyGrid'
+});
+
+let robotX=0, robotY=0, robotYaw=0;
+let mapData=null, mapInfo=null;
+
+// 창 크기 변경 시 맵 다시 그리기
+window.addEventListener('resize', () => {
+    if(mapData) drawMap();
+});
+
+mapListener.subscribe(msg => {
+    mapData = msg.data;
+    mapInfo = msg.info;
+    drawMap();
+});
+
+function drawMap(){
+    if(!mapData) return;
+    
+    // (1) 컨테이너의 현재 크기 가져오기
+    const containerWidth = mapContainer.clientWidth;
+    const containerHeight = mapContainer.clientHeight;
+
+    // (2) 맵 원본 크기
+    const mapWidth = mapInfo.width;
+    const mapHeight = mapInfo.height;
+
+    // (3) 비율 계산 (화면에 꽉 차게, 여백 95%)
+    const scale = Math.min(containerWidth / mapWidth, containerHeight / mapHeight) * 0.95;
+
+    // (4) 캔버스 크기 적용
+    mapCanvas.width = mapWidth * scale;
+    mapCanvas.height = mapHeight * scale;
+
+    mapCtx.clearRect(0,0,mapCanvas.width,mapCanvas.height);
+
+    // (5) 맵 데이터 그리기
+    for(let y=0; y<mapHeight; y++){
+        for(let x=0; x<mapWidth; x++){
+            const i = x + y*mapWidth;
+            const val = mapData[i];
+            
+            // 색상: 벽(검정), 이동가능(흰색), 미지(회색)
+            if(val === 100) mapCtx.fillStyle = '#000'; 
+            else if(val === 0) mapCtx.fillStyle = '#fff';
+            else mapCtx.fillStyle = '#e0e0e0';
+
+            // 픽셀 그리기 (소수점 깨짐 방지 위해 Math.ceil 사용)
+            mapCtx.fillRect(x*scale, y*scale, Math.ceil(scale), Math.ceil(scale));
+        }
+    }
+
+    // (6) 로봇 위치 그리기
+    const resolution = mapInfo.resolution;
+    const originX = mapInfo.origin.position.x;
+    const originY = mapInfo.origin.position.y;
+
+    // 좌표 변환
+    const rx = (robotX - originX) / resolution * scale;
+    const ry = (robotY - originY) / resolution * scale;
+    
+    // 로봇 마커 크기 (최소 6px 보장)
+    const robotSize = Math.max(6, scale * 3);
+
+    mapCtx.fillStyle='red';
+    mapCtx.beginPath();
+    mapCtx.arc(rx, ry, robotSize/2, 0, 2*Math.PI);
+    mapCtx.fill();
+}
+
+// 4. 로봇 상태 (Pose)
+const poseListener = new ROSLIB.Topic({
+    ros: ros,
+    name: '/amcl_pose',
+    messageType: 'geometry_msgs/PoseWithCovarianceStamped'
+});
+
+poseListener.subscribe(msg=>{
+    robotX = msg.pose.pose.position.x;
+    robotY = msg.pose.pose.position.y;
+    const q = msg.pose.pose.orientation;
+    // Quaternion to Yaw
+    robotYaw = Math.atan2(2*(q.w*q.z+q.x*q.y), 1-2*(q.y*q.y + q.z*q.z));
+    
+    // UI 업데이트
+    document.getElementById('robot-pos').innerText = `X:${robotX.toFixed(2)}, Y:${robotY.toFixed(2)}`;
+    document.getElementById('robot-yaw').innerText = `${robotYaw.toFixed(2)} rad`;
+    
+    // 맵 갱신
+    drawMap();
+});
+
+// 5. YOLO 이벤트 로그
+const yoloListener = new ROSLIB.Topic({
+    ros: ros,
+    name: '/yolo_result',
+    messageType: 'std_msgs/String'
+});
+
+yoloListener.subscribe(msg=>{
+    const ul = document.getElementById('yolo-log');
+    const li = document.createElement('li');
+    
+    // 시간 표시 추가
+    const time = new Date().toLocaleTimeString();
+    li.innerText = `[${time}] ${msg.data}`;
+    
+    ul.prepend(li);
+    if(ul.childNodes.length > 20) ul.removeChild(ul.lastChild);
+});
+
+// 6. 터틀봇 이동 모니터링(image_raw/compressed)
+const cameraCanvas = document.getElementById('cameraCanvas');
+const cameraCtx = cameraCanvas.getContext('2d');
+
+// 캔버스 초기 비율 설정 (4:3)
+cameraCanvas.width = 640;
+cameraCanvas.height = 480;
+
+const imgTopic = new ROSLIB.Topic({
+    ros: ros,
+    name: '/image_raw/compressed',
+    messageType: 'sensor_msgs/CompressedImage'
+});
+
+imgTopic.subscribe(msg=>{
+    const image = new Image();
+    image.src = "data:image/jpeg;base64," + msg.data;
+    image.onload = function(){
+        // 캔버스 크기에 맞춰 이미지 그리기
+        cameraCtx.drawImage(image, 0, 0, cameraCanvas.width, cameraCanvas.height);
+    }
+});
+</script>
+</body>
+</html>
