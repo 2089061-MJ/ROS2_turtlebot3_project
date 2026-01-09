@@ -1,4 +1,6 @@
-# 아직까지는 A* + apf 방식이 주행이 잘됨. 
+# 목적지 도달하고서 다른 지점으로 이동할 때 장애물 인식 거리 때문에 회전을 안하고 벽에 갇힌 오류가 발생했으나 수정함.
+# 주행 파라미터도 미세하게 조정 (이제 벽에 바짝 붙어서 이동하지 않습니다.)
+# 동적 장애물 감지할 때 정지 기능은 구현되어있습니다. 회피 이동은 별도로 구현이 필요합니다.
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
@@ -26,10 +28,9 @@ class RealNavigation(Node):
     def __init__(self):
         super().__init__('integrated_navigation')
 
-        # yaml 파일 불러오기 (시작 좌표를 확인하기 위해서) 
+        # yaml 파일 불러오기
         yaml_path = '/home/teamone/team1_project/src/ros2_project/config/setup.yaml'
         self.start_cfg = {'x': 0.0, 'y': 0.0, 'yaw': -1.57}
-        
         try:
             with open(yaml_path, 'r') as f:
                 cfg = yaml.safe_load(f)
@@ -39,31 +40,42 @@ class RealNavigation(Node):
 
         # 주행 파라미터
         self.MAX_SPEED = 0.15       
-        self.LOOK_AHEAD = 0.5       # 코너링 핵심
+        self.LOOK_AHEAD = 0.5       
         self.GOAL_TOL = 0.15        
 
         self.ATT_GAIN = 1.5         
-        # 벽 반발력을 살짝 키움 (기존 0.15 -> 0.20)
-        self.REP_GAIN = 0.20        
-        self.base_obs_dist = 0.35   
+        # 벽에서 밀어내는 힘 강화 (0.2 -> 0.3)
+        self.REP_GAIN = 0.30        
+        # 벽 감지 시작 거리 증가 (0.35m -> 0.50m) -> 미리 피함
+        self.base_obs_dist = 0.50   
 
         self.ROBOT_RADIUS = 0.18    
-        self.SAFE_MARGIN = 0.03     
+        # 경로 생성 여유폭 대폭 증가 (0.03m -> 0.12m)
+        # 이제 A* 경로 자체가 벽에서 12cm 더 떨어져서 생성됩니다.
+        self.SAFE_MARGIN = 0.12     
+
+        # 비상 정지 기준
+        self.NORMAL_STOP_DIST = 0.18    # 평소 주행 시 정지 거리 (벽)
+        self.ROTATE_STOP_DIST = 0.11    # 회전 시 허용 거리 (벽)
+        
+        self.OBSTACLE_STOP_DIST = 0.35  # 전방 장애물(동적) 감지 거리
+        
 
         # 변수 초기화
         self.map_data = None; self.curr_pose = None; self.curr_yaw = 0.0
         self.global_path = []; self.path_idx = 0
         self.map_info = {'res':0.05, 'w':0, 'h':0, 'ox':0, 'oy':0}
         
-        self.front_dist = 99.9
+        # 거리 변수 초기화
+        self.front_dist = 99.9      # 벽 감지용
+        self.long_front_dist = 99.9 # 장애물 감지용
         self.left_dist = 99.9
         self.right_dist = 99.9
         self.scan_ranges = []
 
-        # 상태 플래그
         self.amcl_synced = False    
 
-        # ros2 pub
+        # 통신 설정 ros2 pub
         self.pub_cmd = self.create_publisher(Twist, '/cmd_vel', 10)
         self.pub_path = self.create_publisher(Path, '/planned_path', 10)
         self.pub_init = self.create_publisher(PoseWithCovarianceStamped, '/initialpose', 10)
@@ -77,75 +89,43 @@ class RealNavigation(Node):
                          durability=DurabilityPolicy.VOLATILE, history=HistoryPolicy.KEEP_LAST)
         self.create_subscription(LaserScan, '/scan', self.cb_scan, qos)
 
-        # 제어 루프
         self.create_timer(0.1, self.control_loop)
-        
-        # AMCL 동기화 체크 타이머
         self.create_timer(0.5, self.check_amcl_sync)
 
-        self.get_logger().info("실전 내비게이션 준비 완료 (충돌 방지 강화)")
+        self.get_logger().info("통합 내비게이션 노드 실행중입니다.")
 
-    # AMCL 동기화 로직
-    def check_amcl_sync(self):
-        if self.amcl_synced: return
+    
+    # 센서 데이터 분리
+    def cb_scan(self, msg):
+        self.scan_ranges = msg.ranges
+        count = len(msg.ranges)
+        if count > 0:
+            wide_range = msg.ranges[0:40] + msg.ranges[-40:]
+            self.front_dist = self.get_min(wide_range)
 
-        target_x = float(self.start_cfg['x'])
-        target_y = float(self.start_cfg['y'])
-        target_yaw = float(self.start_cfg['yaw'])
+            narrow_range = msg.ranges[0:10] + msg.ranges[-10:]
+            self.long_front_dist = self.get_min(narrow_range)
 
-        if self.curr_pose is None:
-            self.publish_initial_pose()
-            return
+            self.left_dist = self.get_min(msg.ranges[40:90])
+            self.right_dist = self.get_min(msg.ranges[-90:-40])
 
-        # 위치 및 각도 오차 계산
-        dist_err = sqrt((self.curr_pose[0] - target_x)**2 + (self.curr_pose[1] - target_y)**2)
-        yaw_err = abs(self.curr_yaw - target_yaw)
-        while yaw_err > pi: yaw_err -= 2*pi
-        yaw_err = abs(yaw_err)
+    def get_min(self, ranges):
+        v = [r for r in ranges if 0.05 < r < 10.0]
+        return min(v) if v else 99.9
 
-        if dist_err < 0.2 and yaw_err < 0.5:
-            self.amcl_synced = True
-            self.get_logger().info(f"동기화 완료! (위치오차:{dist_err:.2f}, 각도오차:{yaw_err:.2f})")
-            self.get_logger().info("명령 대기 중...")
-        else:
-            self.publish_initial_pose()
-            if self.pub_init.get_subscription_count() > 0:
-                self.get_logger().warn(f"위치 보정 중... (Target Yaw: {target_yaw:.2f})")
-
-    def publish_initial_pose(self):
-        msg = PoseWithCovarianceStamped()
-        msg.header.frame_id = 'map'
-        msg.header.stamp = self.get_clock().now().to_msg()
-        
-        yaw = float(self.start_cfg['yaw'])
-        msg.pose.pose.position.x = float(self.start_cfg['x'])
-        msg.pose.pose.position.y = float(self.start_cfg['y'])
-        msg.pose.pose.orientation.z = sin(yaw / 2.0)
-        msg.pose.pose.orientation.w = cos(yaw / 2.0)
-        
-        msg.pose.covariance = [0.0]*36
-        msg.pose.covariance[0]=0.02; msg.pose.covariance[7]=0.02; msg.pose.covariance[35]=0.01
-        
-        self.pub_init.publish(msg)
-
-    # 메인 제어 루프
+    # 제어 루프
     def control_loop(self):
         if not self.amcl_synced: return
         if not self.global_path or self.curr_pose is None: return
 
-        # 도착 확인
+        # 1. 도착 확인
         goal = self.global_path[-1]
         dist_total = sqrt((goal[0]-self.curr_pose[0])**2 + (goal[1]-self.curr_pose[1])**2)
         if dist_total < self.GOAL_TOL:
             self.stop(); self.global_path = []; self.get_logger().info("도착!")
             return
 
-        # 비상 정지 거리 증가 (0.15 -> 0.18)
-        if self.front_dist < 0.18:
-            self.stop_emergency()
-            return
-
-        # APF 계산
+        # 목표 각도 계산
         local_goal = self.get_local_goal()
         
         dx = local_goal[0] - self.curr_pose[0]
@@ -159,7 +139,6 @@ class RealNavigation(Node):
             f_att_y = (ly/ld) * self.ATT_GAIN
         else: f_att_x, f_att_y = 0,0
 
-        # 척력
         f_rep_x, f_rep_y = 0.0, 0.0
         if self.left_dist < self.base_obs_dist:
             force = self.REP_GAIN * (1.0/self.left_dist - 1.0/self.base_obs_dist)
@@ -175,14 +154,31 @@ class RealNavigation(Node):
         total_y = f_att_y + f_rep_y
         target_ang = atan2(total_y, total_x)
 
-        # 모터 제어 명령
-        cmd = Twist()
+        # 상황별 정지 조건
+        is_turning = abs(target_ang) > 0.7  
         
-        # 회전: 데드밴드 없이 부드럽게
+        if is_turning:
+            limit_dist = self.ROTATE_STOP_DIST
+        else:
+            limit_dist = self.NORMAL_STOP_DIST
+
+        # (A) 벽 충돌 체크
+        if self.front_dist < limit_dist:
+            self.stop_emergency()
+            self.get_logger().warn(f"벽 너무 가까움({self.front_dist:.2f}m)! 정지")
+            return
+
+        # (B) 전방 장애물 체크 (회전 시 무시)
+        if not is_turning and self.long_front_dist < self.OBSTACLE_STOP_DIST:
+            self.stop_emergency()
+            self.get_logger().warn(f"전방 장애물 발견! 정지")
+            return
+
+        # 모터 명령
+        cmd = Twist()
         cmd.angular.z = target_ang * 1.0
         cmd.angular.z = max(min(cmd.angular.z, 0.8), -0.8)
 
-        # 직진: 90도 이내면 감속하며 전진
         if abs(target_ang) < pi/2:
             cmd.linear.x = self.MAX_SPEED * (1.0 - abs(target_ang)/(pi/2))
         else:
@@ -190,44 +186,42 @@ class RealNavigation(Node):
 
         self.pub_cmd.publish(cmd)
 
-    # 센서 및 유틸리티 
-    def cb_scan(self, msg):
-        self.scan_ranges = msg.ranges
-        count = len(msg.ranges)
-        if count > 0:
-            # 전방 감지 각도 확대 (기존 +-20도 -> 수정 후 +-40도)
-            # 대각선 앞 벽을 '앞'으로 인식하여 미리 멈추거나 피하게 함
-            front_range = msg.ranges[0:40] + msg.ranges[-40:]
-            
-            # 나머지는 좌우
-            left_range = msg.ranges[40:90]
-            right_range = msg.ranges[-90:-40]
-
-            self.front_dist = self.get_min(front_range)
-            self.left_dist = self.get_min(left_range)
-            self.right_dist = self.get_min(right_range)
-
-    def get_min(self, ranges):
-        v = [r for r in ranges if 0.05 < r < 10.0]
-        return min(v) if v else 99.9
-
+    def stop(self): self.pub_cmd.publish(Twist())
     def stop_emergency(self):
         cmd = Twist()
-        cmd.linear.x = -0.05; cmd.angular.z = 0.0
+        cmd.linear.x = 0.0; cmd.angular.z = 0.0
         self.pub_cmd.publish(cmd)
 
+    # 유틸리티
+    def check_amcl_sync(self):
+        if self.amcl_synced: return
+        target_x = float(self.start_cfg['x'])
+        target_y = float(self.start_cfg['y'])
+        if self.curr_pose is None: self.publish_initial_pose(); return
+        dist = sqrt((self.curr_pose[0]-target_x)**2 + (self.curr_pose[1]-target_y)**2)
+        if dist < 0.2: 
+            self.amcl_synced = True; self.get_logger().info("동기화 완료!")
+        else: self.publish_initial_pose()
+
+    def publish_initial_pose(self):
+        msg = PoseWithCovarianceStamped()
+        msg.header.frame_id = 'map'; msg.header.stamp = self.get_clock().now().to_msg()
+        msg.pose.pose.position.x = float(self.start_cfg['x'])
+        msg.pose.pose.position.y = float(self.start_cfg['y'])
+        msg.pose.pose.orientation.z = sin(float(self.start_cfg['yaw'])/2)
+        msg.pose.pose.orientation.w = cos(float(self.start_cfg['yaw'])/2)
+        msg.pose.covariance = [0.0]*36; msg.pose.covariance[0]=0.02; msg.pose.covariance[35]=0.01
+        self.pub_init.publish(msg)
+
     def cb_goal(self, msg):
-        if not self.amcl_synced: 
-            self.get_logger().warn("AMCL 동기화 대기 중...")
-            return
-        
+        if not self.amcl_synced: return
         sx, sy = self.w2g(self.curr_pose)
         gx, gy = self.w2g([msg.pose.position.x, msg.pose.position.y])
         path = self.run_astar((sy, sx), (gy, gx))
         if path:
             self.global_path = [[p[1]*self.map_info['res']+self.map_info['ox'], 
                                  p[0]*self.map_info['res']+self.map_info['oy']] for p in path]
-            self.path_idx = 0; self.viz_path(); self.get_logger().info("출발!")
+            self.path_idx = 0; self.viz_path(); self.get_logger().info("새로운 목적지 Goal로 이동합니다. 출발")
 
     def run_astar(self, start, end):
         start_node = NodeAStar(None, start)
@@ -286,14 +280,12 @@ class RealNavigation(Node):
 
     def w2g(self, p):
         return int((p[0]-self.map_info['ox'])/self.map_info['res']), int((p[1]-self.map_info['oy'])/self.map_info['res'])
-    
     def viz_path(self):
         msg = Path(); msg.header.frame_id = 'map'
         for p in self.global_path:
             ps = PoseStamped(); ps.pose.position.x = p[0]; ps.pose.position.y = p[1]
             msg.poses.append(ps)
         self.pub_path.publish(msg)
-    def stop(self): self.pub_cmd.publish(Twist())
 
 def main(args=None):
     rclpy.init(args=args); node = RealNavigation()
